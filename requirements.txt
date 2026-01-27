@@ -1,0 +1,4 @@
+SQLAlchemy
+aiohttp
+asyncpg
+aiohttp[speedups]
