@@ -2,9 +2,12 @@ import json
 from aiohttp import web
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 from models import Session, Ad, close_orm, init_orm
 from typing import Union
+from pydantic import BaseModel, ValidationError, constr, EmailStr
 
+routes = web.RouteTableDef()
 
 def get_http_error(err_cls, message: Union[str, dict, list]):
     error_message = json.dumps({"error": message})
@@ -53,6 +56,10 @@ async def add_Ad(ad: Ad, session: AsyncSession):
     except IntegrityError as err:
         raise get_http_error(web.HTTPConflict, "user already exists")
 
+class AdCreate(BaseModel):
+    title: constr(min_length=3, max_length=100)
+    content: constr(min_length=10)
+    owner: constr(min_length=3)
 
 class AdView(web.View):
 
@@ -66,22 +73,51 @@ class AdView(web.View):
 
     async def post(self):
         json_data = await self.request.json()
-        ad = Ad(**json_data)
+        try:
+            ad_data = AdCreate(**json_data)
+        except ValidationError as e:
+            return get_http_error(web.HTTPUnprocessableEntity, e.errors())
+
+        ad = Ad(**ad_data.dict())
         await add_Ad(ad, self.request.session)
-        return web.json_response(ad.id_dict)
+        return web.json_response(ad.id)
 
     async def delete(self):
         ad = await get_Ad_by_id(self.ad_id, self.request.session)
         await delete_Ad_by_id(ad, self.request.session)
         return web.json_response({"status": "deleted"})
 
+    async def patch(self):
+        ad = await get_Ad_by_id(self.ad_id, self.request.session)
+        json_data = await self.request.json()
+
+        try:
+            ad_data = AdCreate(**json_data)
+        except ValidationError as e:
+            return get_http_error(web.HTTPUnprocessableEntity, e.errors())
+
+        ad.title = ad_data.title
+        ad.content = ad_data.content
+        ad.owner = ad_data.owner
+
+        await self.request.session.commit()
+        return web.json_response(ad.dict())
+
+@routes.get("/ads")
+async def get_all_ads(request):
+    session = request.session
+    result = await session.execute(select(Ad))
+    ads = result.scalars().all()
+    return web.json_response([ad.dict() for ad in ads])
 
 app.add_routes(
     [
-        web.post("/api", AdView),
-        web.get("/api/{ad_id:[0-9]+}", AdView),
-        web.delete("/api/{ad_id:[0-9]+}", AdView),
+        web.post("/ads", AdView),
+        web.get("/ads/{ad_id:[0-9]+}", AdView),
+        web.delete("/ads/{ad_id:[0-9]+}", AdView),
+        web.patch("/ads/{ad_id:[0-9]+}", AdView)
     ]
 )
+
 
 web.run_app(app, host='127.0.0.1', port=8080)
